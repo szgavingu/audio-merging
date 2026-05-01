@@ -41,9 +41,18 @@
   }
   .file-item .trim-btn {
     background: none; border: none; color: #86868b; cursor: pointer;
-    font-size: 16px; padding: 4px 8px; border-radius: 6px; margin-right: 4px;
+    font-size: 16px; padding: 4px 8px; border-radius: 6px; margin-right: 2px;
   }
   .file-item .trim-btn:hover { background: #e5f0ff; color: #0071e3; }
+  .move-btns {
+    display: flex; flex-direction: column; gap: 0; margin-right: 4px;
+  }
+  .move-btns button {
+    background: none; border: none; color: #86868b; cursor: pointer;
+    font-size: 10px; padding: 2px 6px; line-height: 1; border-radius: 4px;
+  }
+  .move-btns button:hover { background: #e8e8ed; color: #1d1d1f; }
+  .move-btns button:disabled { color: #d2d2d7; cursor: default; }
   .file-item .remove-btn {
     background: none; border: none; color: #86868b; cursor: pointer;
     font-size: 18px; padding: 4px 8px; border-radius: 6px;
@@ -115,6 +124,8 @@
     position: absolute; top: 0; bottom: 0; width: 2px;
     background: #ff3b30; display: none; z-index: 6;
     cursor: ew-resize; pointer-events: auto;
+    padding: 0 10px; margin-left: -10px;
+    background-clip: content-box;
   }
   .waveform-progress::after {
     content: ''; position: absolute; top: -4px; left: -5px;
@@ -370,7 +381,10 @@ function renderList() {
     div.dataset.index = i;
     const trimmed = fileTrimmed[i] !== null;
     div.innerHTML = `
-      <span class="drag-handle">☰</span>
+      <div class="move-btns">
+        <button title="上移" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button title="下移" ${i === audioFiles.length - 1 ? 'disabled' : ''}>▼</button>
+      </div>
       <div class="file-info">
         <div class="file-name">${i + 1}. ${file.name}${trimmed ? '<span class="trimmed-badge">已裁剪</span>' : ''}</div>
         <div class="file-meta">${formatSize(file.size)}</div>
@@ -378,6 +392,18 @@ function renderList() {
       <button class="trim-btn" title="裁剪">✂</button>
       <button class="remove-btn" title="移除">✕</button>
     `;
+    div.querySelectorAll('.move-btns button').forEach((btn, bi) => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const dir = bi === 0 ? -1 : 1;
+        const ni = i + dir;
+        if (ni < 0 || ni >= audioFiles.length) return;
+        [audioFiles[i], audioFiles[ni]] = [audioFiles[ni], audioFiles[i]];
+        [fileBuffers[i], fileBuffers[ni]] = [fileBuffers[ni], fileBuffers[i]];
+        [fileTrimmed[i], fileTrimmed[ni]] = [fileTrimmed[ni], fileTrimmed[i]];
+        renderList();
+      });
+    });
     div.querySelector('.trim-btn').addEventListener('click', e => {
       e.stopPropagation();
       openFileEditor(i);
@@ -786,7 +812,15 @@ function startPlayback() {
   const dur = editBuffer.duration;
   const startSec = trimStart * dur;
   const endSec = trimEnd * dur;
-  const playheadSec = playheadRatio * dur;
+  let playheadSec = playheadRatio * dur;
+
+  // If playhead is at or past the end, reset to start
+  if (trimMode === 'keep') {
+    if (playheadSec >= endSec - 0.01) playheadSec = startSec;
+  } else {
+    if (playheadSec >= dur - 0.01) playheadSec = 0;
+  }
+  playheadRatio = playheadSec / dur;
 
   if (trimMode === 'keep') {
     const from = Math.max(startSec, playheadSec);
