@@ -127,9 +127,13 @@
     padding: 0 10px; margin-left: -10px;
     background-clip: content-box;
   }
-  .waveform-progress::after {
-    content: ''; position: absolute; top: -4px; left: -5px;
-    width: 12px; height: 8px; background: #ff3b30; border-radius: 2px;
+  .waveform-progress::before {
+    content: ''; position: absolute; top: 0; left: 50%;
+    transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-top: 10px solid #ff3b30;
   }
 
   .handle {
@@ -138,13 +142,14 @@
   }
   .handle-line {
     position: absolute; top: 0; bottom: 0; left: 50%;
-    width: 2px; background: #0071e3; transform: translateX(-50%);
+    width: 4px; background: #ff6b00; transform: translateX(-50%);
+    box-shadow: 0 0 4px rgba(255,107,0,.5);
   }
   .handle-dot {
     position: absolute; top: 50%; left: 50%;
-    width: 12px; height: 12px; background: #0071e3;
+    width: 16px; height: 16px; background: #ff6b00;
     border-radius: 50%; transform: translate(-50%, -50%);
-    box-shadow: 0 1px 3px rgba(0,0,0,.2);
+    box-shadow: 0 1px 4px rgba(0,0,0,.25);
   }
   .handle-start { left: 0; }
   .handle-end { left: calc(100% - 24px); }
