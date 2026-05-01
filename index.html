@@ -1001,6 +1001,13 @@ saveTrimBtn.addEventListener('click', () => {
 });
 
 async function saveAudio(buffer) {
+  const defaultName = editIndex >= 0
+    ? audioFiles[editIndex].name.replace(/\.[^.]+$/, '') + '_trimmed.wav'
+    : 'merged.wav';
+  const fileName = prompt('请输入文件名：', defaultName);
+  if (!fileName) return;
+
+  const finalName = fileName.endsWith('.wav') ? fileName : fileName + '.wav';
   showProgress('正在保存', '编码 WAV 文件...', 50);
   const wav = encodeWAV(buffer);
   showProgress('正在保存', '选择保存位置...', 90);
@@ -1008,7 +1015,7 @@ async function saveAudio(buffer) {
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
-        suggestedName: 'merged.wav',
+        suggestedName: finalName,
         types: [{ description: 'WAV 音频', accept: { 'audio/wav': ['.wav'] } }]
       });
       const writable = await handle.createWritable();
@@ -1022,7 +1029,7 @@ async function saveAudio(buffer) {
   } else {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(wav);
-    a.download = 'merged.wav';
+    a.download = finalName;
     a.click();
     URL.revokeObjectURL(a.href);
   }
