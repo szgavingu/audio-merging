@@ -33,8 +33,17 @@
   .file-item.dragging { opacity: .4; }
   .file-item .drag-handle { color: #c7c7cc; margin-right: 12px; font-size: 14px; cursor: grab; }
   .file-item .file-info { flex: 1; min-width: 0; }
-  .file-item .file-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-item .file-name { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
   .file-item .file-meta { font-size: 12px; color: #86868b; margin-top: 2px; }
+  .trimmed-badge {
+    display: inline-block; font-size: 10px; font-weight: 600; color: #fff;
+    background: #34c759; padding: 1px 6px; border-radius: 4px; vertical-align: middle;
+  }
+  .file-item .trim-btn {
+    background: none; border: none; color: #86868b; cursor: pointer;
+    font-size: 16px; padding: 4px 8px; border-radius: 6px; margin-right: 4px;
+  }
+  .file-item .trim-btn:hover { background: #e5f0ff; color: #0071e3; }
   .file-item .remove-btn {
     background: none; border: none; color: #86868b; cursor: pointer;
     font-size: 18px; padding: 4px 8px; border-radius: 6px;
@@ -98,9 +107,18 @@
   }
   .waveform-mask-left { left: 0; }
   .waveform-mask-right { right: 0; }
+  .waveform-mask-mid {
+    position: absolute; top: 0; bottom: 0;
+    background: rgba(220,38,38,.3); display: none;
+  }
   .waveform-progress {
     position: absolute; top: 0; bottom: 0; width: 2px;
-    background: #ff3b30; display: none; z-index: 3;
+    background: #ff3b30; display: none; z-index: 6;
+    cursor: ew-resize; pointer-events: auto;
+  }
+  .waveform-progress::after {
+    content: ''; position: absolute; top: -4px; left: -5px;
+    width: 12px; height: 8px; background: #ff3b30; border-radius: 2px;
   }
 
   .handle {
@@ -141,6 +159,13 @@
   }
   .play-btn:hover { background: #0062cc; }
   .play-btn svg { fill: currentColor; }
+  .replay-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none;
+    background: #e8e8ed; color: #1d1d1f; font-size: 14px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .replay-btn:hover { background: #dcdce1; }
+  .replay-btn svg { fill: currentColor; }
 
   .mode-toggle {
     display: flex; background: #e8e8ed; border-radius: 8px;
@@ -152,11 +177,6 @@
     background: transparent; color: #86868b; transition: all .15s;
   }
   .mode-btn.active { background: #fff; color: #1d1d1f; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
-
-  .waveform-mask-mid {
-    position: absolute; top: 0; bottom: 0;
-    background: rgba(220,38,38,.3); display: none;
-  }
 </style>
 </head>
 <body>
@@ -185,7 +205,7 @@
   <!-- Trim editor view -->
   <div class="trim-editor" id="trimEditor">
     <div class="editor-header">
-      <h2>裁剪音频</h2>
+      <h2 id="editorTitle">裁剪音频</h2>
       <button class="back-btn" id="backBtn">返回</button>
     </div>
 
@@ -200,8 +220,8 @@
         <div class="waveform-mask-left" id="maskLeft"></div>
         <div class="waveform-mask-right" id="maskRight"></div>
         <div class="waveform-mask-mid" id="maskMid"></div>
-        <div class="waveform-progress" id="progressLine"></div>
       </div>
+      <div class="waveform-progress" id="progressLine"></div>
       <div class="handle handle-start" id="handleStart">
         <div class="handle-line"></div>
         <div class="handle-dot"></div>
@@ -223,9 +243,12 @@
       <button class="play-btn" id="playBtn">
         <svg viewBox="0 0 24 24" width="20" height="20"><polygon points="6,3 20,12 6,21"/></svg>
       </button>
+      <button class="replay-btn" id="replayBtn" title="从头播放">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+      </button>
     </div>
 
-    <div class="actions">
+    <div class="actions" id="editorActions">
       <button class="btn btn-secondary" id="saveFullBtn">保存全部</button>
       <button class="btn btn-primary" id="saveTrimBtn">保存选中区间</button>
     </div>
@@ -242,22 +265,31 @@
 
 <script>
 const audioFiles = [];
+const fileBuffers = [];   // decoded original AudioBuffer for each file
+const fileTrimmed = [];   // trimmed AudioBuffer for each file (null if not trimmed)
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+let dragFromIndex = -1;
 
-let mergedBuffer = null;
-let trimMode = 'keep'; // 'keep' or 'remove'
+// Editor state
+let editBuffer = null;   // current buffer being edited
+let editIndex = -1;      // -1 = merged result, 0+ = file index
+let trimMode = 'keep';
 let trimStart = 0;
 let trimEnd = 1;
 let currentSource = null;
 let isPlaying = false;
 let playStartTime = 0;
-let playOffset = 0;
 let playTotalDur = 0;
 let animFrame = null;
+let playheadRatio = 0; // 0-1 within the full waveform
+let seekStart = 0;    // playhead ratio when playback started (fixed)
+let seeking = false;
 
 // DOM refs
 const pickerView = document.getElementById('pickerView');
 const trimEditor = document.getElementById('trimEditor');
+const editorTitle = document.getElementById('editorTitle');
+const editorActions = document.getElementById('editorActions');
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 const fileList = document.getElementById('fileList');
@@ -274,15 +306,16 @@ const handleStart = document.getElementById('handleStart');
 const handleEnd = document.getElementById('handleEnd');
 const maskLeft = document.getElementById('maskLeft');
 const maskRight = document.getElementById('maskRight');
+const maskMid = document.getElementById('maskMid');
 const progressLine = document.getElementById('progressLine');
 const startTimeEl = document.getElementById('startTime');
 const endTimeEl = document.getElementById('endTime');
 const totalTimeEl = document.getElementById('totalTime');
 const selectionDuration = document.getElementById('selectionDuration');
 const playBtn = document.getElementById('playBtn');
+const replayBtn = document.getElementById('replayBtn');
 const saveFullBtn = document.getElementById('saveFullBtn');
 const saveTrimBtn = document.getElementById('saveTrimBtn');
-const maskMid = document.getElementById('maskMid');
 const modeKeepBtn = document.getElementById('modeKeep');
 const modeRemoveBtn = document.getElementById('modeRemove');
 
@@ -302,6 +335,8 @@ function addFiles(files) {
   for (const f of files) {
     if (f.type.startsWith('audio/') || /\.(mp3|wav|ogg|m4a|flac|aac|wma)$/i.test(f.name)) {
       audioFiles.push(f);
+      fileBuffers.push(null);
+      fileTrimmed.push(null);
     }
   }
   renderList();
@@ -333,31 +368,44 @@ function renderList() {
     div.className = 'file-item';
     div.draggable = true;
     div.dataset.index = i;
+    const trimmed = fileTrimmed[i] !== null;
     div.innerHTML = `
       <span class="drag-handle">☰</span>
       <div class="file-info">
-        <div class="file-name">${i + 1}. ${file.name}</div>
+        <div class="file-name">${i + 1}. ${file.name}${trimmed ? '<span class="trimmed-badge">已裁剪</span>' : ''}</div>
         <div class="file-meta">${formatSize(file.size)}</div>
       </div>
+      <button class="trim-btn" title="裁剪">✂</button>
       <button class="remove-btn" title="移除">✕</button>
     `;
-    div.querySelector('.remove-btn').addEventListener('click', () => {
+    div.querySelector('.trim-btn').addEventListener('click', e => {
+      e.stopPropagation();
+      openFileEditor(i);
+    });
+    div.querySelector('.remove-btn').addEventListener('click', e => {
+      e.stopPropagation();
       audioFiles.splice(i, 1);
+      fileBuffers.splice(i, 1);
+      fileTrimmed.splice(i, 1);
       renderList();
     });
     div.addEventListener('dragstart', e => {
       e.dataTransfer.effectAllowed = 'move';
       div.classList.add('dragging');
-      div.dataset.dragIndex = i;
+      dragFromIndex = i;
     });
     div.addEventListener('dragend', () => div.classList.remove('dragging'));
     div.addEventListener('dragover', e => e.preventDefault());
     div.addEventListener('drop', e => {
       e.preventDefault();
-      const from = parseInt(div.dataset.dragIndex);
-      if (isNaN(from) || from === i) return;
-      const [item] = audioFiles.splice(from, 1);
-      audioFiles.splice(i, 0, item);
+      const from = dragFromIndex;
+      if (from < 0 || from === i) return;
+      const [fileItem] = audioFiles.splice(from, 1);
+      const [bufItem] = fileBuffers.splice(from, 1);
+      const [trimItem] = fileTrimmed.splice(from, 1);
+      audioFiles.splice(i, 0, fileItem);
+      fileBuffers.splice(i, 0, bufItem);
+      fileTrimmed.splice(i, 0, trimItem);
       renderList();
     });
     fileList.appendChild(div);
@@ -415,6 +463,30 @@ function encodeWAV(audioBuffer) {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+// --- Open editor for single file ---
+async function openFileEditor(index) {
+  showProgress('正在加载', '解码音频...', 50);
+  try {
+    if (!fileBuffers[index]) {
+      fileBuffers[index] = await decodeAudio(audioFiles[index]);
+    }
+    editBuffer = fileTrimmed[index] || fileBuffers[index];
+    editIndex = index;
+    trimStart = 0;
+    trimEnd = 1;
+    trimMode = 'keep';
+    hideProgress();
+
+    editorTitle.textContent = '裁剪: ' + audioFiles[index].name;
+    saveFullBtn.textContent = fileTrimmed[index] ? '恢复原始' : '取消';
+    saveTrimBtn.textContent = '确认裁剪';
+    showTrimEditor();
+  } catch (err) {
+    hideProgress();
+    alert('解码失败: ' + err.message);
+  }
+}
+
 // --- Merge ---
 async function mergeFiles() {
   if (audioFiles.length === 0) return;
@@ -423,7 +495,10 @@ async function mergeFiles() {
     const buffers = [];
     for (let i = 0; i < audioFiles.length; i++) {
       showProgress('正在合并', `解码: ${audioFiles[i].name}`, (i / audioFiles.length) * 80);
-      buffers.push(await decodeAudio(audioFiles[i]));
+      if (!fileBuffers[i]) {
+        fileBuffers[i] = await decodeAudio(audioFiles[i]);
+      }
+      buffers.push(fileTrimmed[i] || fileBuffers[i]);
     }
     const sampleRate = buffers[0].sampleRate;
     const numChannels = Math.max(...buffers.map(b => b.numberOfChannels));
@@ -439,9 +514,15 @@ async function mergeFiles() {
       offset += buf.length;
     }
     hideProgress();
-    mergedBuffer = result;
+    editBuffer = result;
+    editIndex = -1;
     trimStart = 0;
     trimEnd = 1;
+    trimMode = 'keep';
+
+    editorTitle.textContent = '裁剪合并音频';
+    saveFullBtn.textContent = '保存全部';
+    saveTrimBtn.textContent = '保存选中区间';
     showTrimEditor();
   } catch (err) {
     hideProgress();
@@ -456,18 +537,27 @@ mergeBtn.addEventListener('click', mergeFiles);
 function showTrimEditor() {
   pickerView.style.display = 'none';
   trimEditor.classList.add('active');
+  modeKeepBtn.classList.add('active');
+  modeRemoveBtn.classList.remove('active');
+  initWaveform();
+}
+
+function initWaveform() {
   const dpr = window.devicePixelRatio || 1;
   const rect = waveformContainer.getBoundingClientRect();
   waveformCanvas.width = rect.width * dpr;
   waveformCanvas.height = 160 * dpr;
   drawWaveform();
   updateHandles();
+  playheadRatio = trimStart;
+  hidePlayhead();
 }
 
 function hideTrimEditor() {
   stopPlayback();
   trimEditor.classList.remove('active');
   pickerView.style.display = '';
+  renderList();
 }
 
 backBtn.addEventListener('click', hideTrimEditor);
@@ -485,12 +575,12 @@ modeRemoveBtn.addEventListener('click', () => setMode('remove'));
 function drawWaveform() {
   const canvas = waveformCanvas;
   const ctx = canvas.getContext('2d');
-  const dpr = window.devicePixelRatio || 1;
   const w = canvas.width;
   const h = canvas.height;
+  const dpr = window.devicePixelRatio || 1;
   ctx.clearRect(0, 0, w, h);
 
-  const data = mergedBuffer.getChannelData(0);
+  const data = editBuffer.getChannelData(0);
   const samplesPerBar = Math.ceil(data.length / w);
   const halfH = h / 2;
 
@@ -508,7 +598,6 @@ function drawWaveform() {
     ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
   }
 
-  // Center line
   ctx.fillStyle = 'rgba(0,113,227,0.15)';
   ctx.fillRect(0, halfH - 0.5 * dpr, w, dpr);
 }
@@ -516,12 +605,12 @@ function drawWaveform() {
 function updateHandles() {
   const w = waveformContainer.getBoundingClientRect().width;
   const startPx = trimStart * w;
-  const endPx = w - trimEnd * w;
-  const selW = trimEnd * w - startPx;
+  const endPx = trimEnd * w;
+  const selW = endPx - startPx;
 
   if (trimMode === 'keep') {
     maskLeft.style.width = startPx + 'px';
-    maskRight.style.width = (w - trimEnd * w) + 'px';
+    maskRight.style.width = (w - endPx) + 'px';
     maskMid.style.display = 'none';
   } else {
     maskLeft.style.width = '0px';
@@ -534,7 +623,7 @@ function updateHandles() {
   handleStart.style.left = startPx + 'px';
   handleEnd.style.left = (endPx - 24) + 'px';
 
-  const dur = mergedBuffer.duration;
+  const dur = editBuffer.duration;
   startTimeEl.textContent = formatTime(trimStart * dur);
   endTimeEl.textContent = formatTime(trimEnd * dur);
   totalTimeEl.textContent = formatTime(dur);
@@ -595,15 +684,98 @@ handleStart.addEventListener('touchstart', startDrag('start'), { passive: false 
 handleEnd.addEventListener('mousedown', startDrag('end'));
 handleEnd.addEventListener('touchstart', startDrag('end'), { passive: false });
 
+// --- Playhead seek (click on waveform canvas) ---
+waveformCanvas.addEventListener('mousedown', seekFromEvent);
+waveformCanvas.addEventListener('touchstart', seekFromEvent, { passive: false });
+
+function seekFromEvent(e) {
+  e.preventDefault();
+  const rect = waveformContainer.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const x = clientX - rect.left;
+  playheadRatio = Math.max(0, Math.min(1, x / rect.width));
+  showPlayhead();
+
+  if (isPlaying) {
+    stopPlayback();
+    startPlayback();
+  }
+}
+
+// Drag playhead via the progress line
+progressLine.addEventListener('mousedown', startSeekDrag);
+progressLine.addEventListener('touchstart', startSeekDrag, { passive: false });
+
+let isSeekDragging = false;
+
+function startSeekDrag(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  isSeekDragging = true;
+  seeking = isPlaying;
+  if (isPlaying) {
+    stopPlayback();
+  }
+  document.addEventListener('mousemove', onSeekDrag);
+  document.addEventListener('mouseup', stopSeekDrag);
+  document.addEventListener('touchmove', onSeekDrag, { passive: false });
+  document.addEventListener('touchend', stopSeekDrag);
+}
+
+function onSeekDrag(e) {
+  if (!isSeekDragging) return;
+  e.preventDefault();
+  const rect = waveformContainer.getBoundingClientRect();
+  const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+  const x = clientX - rect.left;
+  playheadRatio = Math.max(0, Math.min(1, x / rect.width));
+  progressLine.style.left = (playheadRatio * rect.width) + 'px';
+}
+
+function stopSeekDrag() {
+  const wasPlaying = seeking;
+  isSeekDragging = false;
+  seeking = false;
+  document.removeEventListener('mousemove', onSeekDrag);
+  document.removeEventListener('mouseup', stopSeekDrag);
+  document.removeEventListener('touchmove', onSeekDrag);
+  document.removeEventListener('touchend', stopSeekDrag);
+  if (wasPlaying) startPlayback();
+}
+
+// --- Replay from start ---
+replayBtn.addEventListener('click', () => {
+  const dur = editBuffer.duration;
+  if (trimMode === 'keep') {
+    playheadRatio = trimStart;
+  } else {
+    playheadRatio = 0;
+  }
+  showPlayhead();
+  if (isPlaying) stopPlayback();
+  startPlayback();
+});
+
 // --- Playback ---
+function showPlayhead() {
+  progressLine.style.display = 'block';
+  const containerW = waveformContainer.getBoundingClientRect().width;
+  progressLine.style.left = (playheadRatio * containerW) + 'px';
+}
+
+function hidePlayhead() {
+  progressLine.style.display = 'none';
+}
+
 function stopPlayback() {
   if (currentSource) {
+    currentSource.onended = null;
     try { currentSource.stop(); } catch(e) {}
     currentSource = null;
   }
   isPlaying = false;
   cancelAnimationFrame(animFrame);
-  progressLine.style.display = 'none';
+  showPlayhead();
   playBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20"><polygon points="6,3 20,12 6,21"/></svg>';
 }
 
@@ -611,78 +783,86 @@ function startPlayback() {
   if (isPlaying) { stopPlayback(); return; }
   if (audioCtx.state === 'suspended') audioCtx.resume();
 
-  const dur = mergedBuffer.duration;
+  const dur = editBuffer.duration;
   const startSec = trimStart * dur;
   const endSec = trimEnd * dur;
+  const playheadSec = playheadRatio * dur;
 
-  if (trimMode === 'remove') {
-    // Play before + after the removed section
+  if (trimMode === 'keep') {
+    const from = Math.max(startSec, playheadSec);
+    const playDur = endSec - from;
+    if (playDur <= 0) return;
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = editBuffer;
+    source.connect(audioCtx.destination);
+    source.start(0, from, playDur);
+    source.onended = stopPlayback;
+    currentSource = source;
+    isPlaying = true;
+    playStartTime = audioCtx.currentTime;
+    seekStart = from / dur;
+    playTotalDur = playDur;
+
+    playBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
+    progressLine.style.display = 'block';
+    updateProgressLine();
+  } else {
     const beforeDur = startSec;
     const afterDur = dur - endSec;
     if (beforeDur + afterDur <= 0) return;
 
-    // Create a temp buffer with before + after joined
-    const numCh = mergedBuffer.numberOfChannels;
-    const sr = mergedBuffer.sampleRate;
+    const numCh = editBuffer.numberOfChannels;
+    const sr = editBuffer.sampleRate;
     const beforeSamples = Math.floor(beforeDur * sr);
     const afterSamples = Math.floor(afterDur * sr);
     const totalSamples = beforeSamples + afterSamples;
     const tempBuf = audioCtx.createBuffer(numCh, totalSamples, sr);
     for (let ch = 0; ch < numCh; ch++) {
-      const src = mergedBuffer.getChannelData(ch);
+      const src = editBuffer.getChannelData(ch);
       const dst = tempBuf.getChannelData(ch);
       for (let i = 0; i < beforeSamples; i++) dst[i] = src[i];
       const afterOffset = Math.floor(endSec * sr);
       for (let i = 0; i < afterSamples; i++) dst[beforeSamples + i] = src[afterOffset + i];
     }
 
+    // Figure out offset in the joined buffer from playhead
+    let tempOffset = 0;
+    if (playheadSec <= startSec) {
+      tempOffset = playheadSec;
+    } else if (playheadSec >= endSec) {
+      tempOffset = beforeDur + (playheadSec - endSec);
+    } else {
+      tempOffset = beforeDur;
+    }
+    const tempDur = (totalSamples / sr) - tempOffset;
+    if (tempDur <= 0) return;
+
     const source = audioCtx.createBufferSource();
     source.buffer = tempBuf;
     source.connect(audioCtx.destination);
-    source.start();
+    source.start(0, tempOffset, tempDur);
     source.onended = stopPlayback;
     currentSource = source;
     isPlaying = true;
     playStartTime = audioCtx.currentTime;
-    playOffset = 0;
-    playTotalDur = totalSamples / sr;
+    seekStart = playheadRatio;
+    playTotalDur = tempDur;
 
     playBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
     progressLine.style.display = 'block';
     updateProgressLineRemove();
-    return;
   }
-
-  const playDur = endSec - startSec;
-  if (playDur <= 0) return;
-
-  const source = audioCtx.createBufferSource();
-  source.buffer = mergedBuffer;
-  source.connect(audioCtx.destination);
-  source.start(0, startSec, playDur);
-  source.onended = stopPlayback;
-  currentSource = source;
-  isPlaying = true;
-  playStartTime = audioCtx.currentTime;
-  playOffset = startSec;
-
-  playBtn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>';
-  progressLine.style.display = 'block';
-  updateProgressLine();
 }
 
 function updateProgressLine() {
   if (!isPlaying) return;
   const elapsed = audioCtx.currentTime - playStartTime;
-  const dur = mergedBuffer.duration;
-  const startSec = trimStart * dur;
-  const endSec = trimEnd * dur;
-  const playDur = endSec - startSec;
-  const progress = Math.min(1, elapsed / playDur);
+  const dur = editBuffer.duration;
+  const progress = Math.min(1, elapsed / playTotalDur);
+  playheadRatio = seekStart + progress * (trimEnd - seekStart);
   const containerW = waveformContainer.getBoundingClientRect().width;
-  const leftPx = trimStart * containerW;
-  const selW = (trimEnd - trimStart) * containerW;
-  progressLine.style.left = (leftPx + progress * selW) + 'px';
+  progressLine.style.left = (playheadRatio * containerW) + 'px';
   animFrame = requestAnimationFrame(updateProgressLine);
 }
 
@@ -691,24 +871,101 @@ function updateProgressLineRemove() {
   const elapsed = audioCtx.currentTime - playStartTime;
   const progress = Math.min(1, elapsed / playTotalDur);
   const containerW = waveformContainer.getBoundingClientRect().width;
-  const dur = mergedBuffer.duration;
+  const dur = editBuffer.duration;
+
+  // seekStart was saved as a ratio; convert to "joined" position
   const startPx = trimStart * containerW;
   const endPx = trimEnd * containerW;
   const beforeW = startPx;
   const afterW = containerW - endPx;
-  const totalW = beforeW + afterW;
-  const px = progress * totalW;
-  if (px <= beforeW) {
-    progressLine.style.left = px + 'px';
+
+  // Where seekStart maps to in the joined waveform
+  let seekPx;
+  if (seekStart * containerW <= startPx) {
+    seekPx = seekStart * containerW;
+  } else if (seekStart * containerW >= endPx) {
+    seekPx = beforeW + (seekStart * containerW - endPx);
   } else {
-    progressLine.style.left = (endPx + (px - beforeW)) + 'px';
+    seekPx = beforeW;
   }
+
+  const totalJoinedW = beforeW + afterW;
+  const currentJoinedPx = seekPx + progress * (totalJoinedW - seekPx);
+
+  // Map back to full waveform position
+  if (currentJoinedPx <= beforeW) {
+    playheadRatio = currentJoinedPx / containerW;
+  } else {
+    playheadRatio = (endPx + (currentJoinedPx - beforeW)) / containerW;
+  }
+  progressLine.style.left = (playheadRatio * containerW) + 'px';
   animFrame = requestAnimationFrame(updateProgressLineRemove);
 }
 
 playBtn.addEventListener('click', startPlayback);
 
-// --- Save ---
+// --- Apply trim to buffer ---
+function applyTrim(buffer, startR, endR, mode) {
+  if (mode === 'keep') {
+    return sliceBuffer(buffer, startR, endR);
+  } else {
+    const sr = buffer.sampleRate;
+    const numCh = buffer.numberOfChannels;
+    const total = buffer.length;
+    const startSample = Math.floor(startR * total);
+    const endSample = Math.floor(endR * total);
+    const newLen = startSample + (total - endSample);
+    const result = audioCtx.createBuffer(numCh, newLen, sr);
+    for (let ch = 0; ch < numCh; ch++) {
+      const src = buffer.getChannelData(ch);
+      const dst = result.getChannelData(ch);
+      for (let i = 0; i < startSample; i++) dst[i] = src[i];
+      for (let i = endSample; i < total; i++) dst[startSample + (i - endSample)] = src[i];
+    }
+    return result;
+  }
+}
+
+function sliceBuffer(buffer, startR, endR) {
+  const sr = buffer.sampleRate;
+  const numCh = buffer.numberOfChannels;
+  const total = buffer.length;
+  const startSample = Math.floor(startR * total);
+  const endSample = Math.floor(endR * total);
+  const len = endSample - startSample;
+  const result = audioCtx.createBuffer(numCh, len, sr);
+  for (let ch = 0; ch < numCh; ch++) {
+    const src = buffer.getChannelData(ch);
+    const dst = result.getChannelData(ch);
+    for (let i = 0; i < len; i++) dst[i] = src[startSample + i];
+  }
+  return result;
+}
+
+// --- Save buttons ---
+saveFullBtn.addEventListener('click', () => {
+  if (editIndex >= 0) {
+    // Single file: restore original
+    fileTrimmed[editIndex] = null;
+    hideTrimEditor();
+  } else {
+    // Merged: save as-is
+    saveAudio(editBuffer);
+  }
+});
+
+saveTrimBtn.addEventListener('click', () => {
+  const trimmed = applyTrim(editBuffer, trimStart, trimEnd, trimMode);
+  if (editIndex >= 0) {
+    // Single file: apply trim and go back
+    fileTrimmed[editIndex] = trimmed;
+    hideTrimEditor();
+  } else {
+    // Merged: save
+    saveAudio(trimmed);
+  }
+});
+
 async function saveAudio(buffer) {
   showProgress('正在保存', '编码 WAV 文件...', 50);
   const wav = encodeWAV(buffer);
@@ -739,54 +996,10 @@ async function saveAudio(buffer) {
   setTimeout(hideProgress, 1200);
 }
 
-function trimBuffer(startRatio, endRatio) {
-  const sr = mergedBuffer.sampleRate;
-  const numCh = mergedBuffer.numberOfChannels;
-  const total = mergedBuffer.length;
-  const startSample = Math.floor(startRatio * total);
-  const endSample = Math.floor(endRatio * total);
-  const len = endSample - startSample;
-  const result = audioCtx.createBuffer(numCh, len, sr);
-  for (let ch = 0; ch < numCh; ch++) {
-    const src = mergedBuffer.getChannelData(ch);
-    const dst = result.getChannelData(ch);
-    for (let i = 0; i < len; i++) dst[i] = src[startSample + i];
-  }
-  return result;
-}
-
-saveFullBtn.addEventListener('click', () => saveAudio(mergedBuffer));
-saveTrimBtn.addEventListener('click', () => {
-  if (trimMode === 'keep') {
-    const trimmed = trimBuffer(trimStart, trimEnd);
-    saveAudio(trimmed);
-  } else {
-    const sr = mergedBuffer.sampleRate;
-    const numCh = mergedBuffer.numberOfChannels;
-    const total = mergedBuffer.length;
-    const startSample = Math.floor(trimStart * total);
-    const endSample = Math.floor(trimEnd * total);
-    const newLen = startSample + (total - endSample);
-    const result = audioCtx.createBuffer(numCh, newLen, sr);
-    for (let ch = 0; ch < numCh; ch++) {
-      const src = mergedBuffer.getChannelData(ch);
-      const dst = result.getChannelData(ch);
-      for (let i = 0; i < startSample; i++) dst[i] = src[i];
-      for (let i = endSample; i < total; i++) dst[startSample + (i - endSample)] = src[i];
-    }
-    saveAudio(result);
-  }
-});
-
 // Handle resize
 window.addEventListener('resize', () => {
   if (trimEditor.classList.contains('active')) {
-    const dpr = window.devicePixelRatio || 1;
-    const rect = waveformContainer.getBoundingClientRect();
-    waveformCanvas.width = rect.width * dpr;
-    waveformCanvas.height = 160 * dpr;
-    drawWaveform();
-    updateHandles();
+    initWaveform();
   }
 });
 </script>
